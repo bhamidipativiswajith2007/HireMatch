@@ -263,6 +263,5 @@ Evaluates candidate resume text against indexed job listings.
 
 ---
 
-## 🛡️ License
-
-Distributed under the MIT License. See `LICENSE` for more information.
+## 🛡️Patent
+By Viswajith Bhamidipati.
