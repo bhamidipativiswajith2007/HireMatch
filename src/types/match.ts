@@ -1,4 +1,8 @@
-import { HybridSearchResult } from "./database";
+import { HybridSearchResult, HybridResumeSearchResult } from "./database";
+
+// ==========================================
+// Candidate Mode Types (Resume -> Ranked Jobs)
+// ==========================================
 
 export interface JobMatchExplanation {
   jobId: string;
@@ -23,5 +27,51 @@ export interface MatchResponseBody {
   count: number;
   data: EnrichedJobMatch[];
   queryTimeMs: number;
+  error?: string;
+}
+
+// ==========================================
+// Recruiter Mode Types (JD -> Ranked Resumes)
+// ==========================================
+
+export interface CandidateMatchExplanation {
+  candidateId: string;
+  candidateName: string;
+  matchScore: number; // 0 to 100
+  hiringVerdict: "Strong Interview" | "Consider" | "Reject";
+  fitSummary: string;
+  matchedQualifications: string[];
+  criticalMissingSkills: string[];
+  interviewQuestions: string[];
+}
+
+export interface EnrichedCandidateMatch extends HybridResumeSearchResult {
+  explanation: CandidateMatchExplanation;
+}
+
+export interface CandidateMatchRequestBody {
+  jobDescription: string;
+  limit?: number;
+}
+
+export interface CandidateMatchResponseBody {
+  success: boolean;
+  count: number;
+  data: EnrichedCandidateMatch[];
+  queryTimeMs: number;
+  error?: string;
+}
+
+export interface UploadedCandidateSummary {
+  id: string;
+  candidateName: string;
+  skills: string[];
+  snippet: string;
+}
+
+export interface ResumeUploadResponseBody {
+  success: boolean;
+  count: number;
+  data: UploadedCandidateSummary[];
   error?: string;
 }

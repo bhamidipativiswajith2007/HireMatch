@@ -1,6 +1,6 @@
 import { GoogleGenerativeAI, TaskType, EmbedContentRequest } from "@google/generative-ai";
-import { HybridSearchResult } from "@/types/database";
-import { JobMatchExplanation } from "@/types/match";
+import { HybridSearchResult, HybridResumeSearchResult } from "@/types/database";
+import { JobMatchExplanation, CandidateMatchExplanation } from "@/types/match";
 
 // Gemini embedding model
 export const EMBEDDING_MODEL = "gemini-embedding-001";
@@ -63,8 +63,7 @@ export async function batchGenerateEmbeddings(
 }
 
 /**
- * Uses Gemini LLM to compare a resume against a batch of retrieved jobs,
- * returning structured fit analysis and skill gaps.
+ * Candidate Mode: Compares a resume against retrieved jobs (Candidate perspective)
  */
 export async function explainJobMatches(
   resumeText: string,
@@ -78,7 +77,7 @@ export async function explainJobMatches(
   const model = genAI.getGenerativeModel({
     model: LLM_MODEL,
     generationConfig: {
-      temperature: 0.2,
+      temperature: 0.0, // Strictly deterministic, zero hallucination
       responseMimeType: "application/json",
     },
   });
@@ -88,12 +87,12 @@ export async function explainJobMatches(
     title: job.title,
     category: job.category,
     skills: job.skills,
-    descriptionSnippet: job.description.slice(0, 800),
+    description: job.description.slice(0, 2000),
   }));
 
   const prompt = `
-You are an expert technical recruiter and talent evaluator for HireMatch.
-Evaluate the candidate's resume against the following candidate job openings.
+You are an expert technical talent evaluator for HireMatch.
+Evaluate the candidate's resume strictly against each retrieved job opening.
 
 Candidate Resume:
 \"\"\"
@@ -103,16 +102,14 @@ ${resumeText.slice(0, 4000)}
 Job Openings:
 ${JSON.stringify(jobsPayload, null, 2)}
 
-Instructions:
-1. For EVERY job listed above, evaluate how well the candidate matches the requirements.
-2. Provide an honest match score from 0 to 100 based on technical and experience alignment.
-3. Explicitly extract:
-   - "matchingSkills": Technical skills or qualifications the candidate POSSESSES that the job requires.
-   - "missingSkills": Key skills or qualifications the job requires that are MISSING or weak in the resume.
-   - "fitSummary": A concise 2-3 sentence assessment explaining why this candidate is or isn't a strong fit.
-   - "recommendation": Concrete advice on what the candidate should highlight or bridge to qualify.
+STRICT GROUNDING & ANTI-HALLUCINATION RULES:
+1. "missingSkills" MUST ONLY include skills, tools, or requirements that are EXPLICITLY and VERBATIM stated in that specific job opening's description or required skills list.
+2. DO NOT extrapolate, infer, or assume skills that a "typical" job might need. If the job description does NOT mention it, you are STRICTLY FORBIDDEN from listing it as a missing skill.
+3. If the candidate covers all explicitly stated requirements in the job opening, "missingSkills" MUST be an empty array [].
+4. "matchingSkills" MUST only include qualifications clearly demonstrated in the candidate's resume that match the job.
+5. Provide a realistic matchScore from 0 to 100 based solely on alignment with the explicit requirements.
 
-Return a JSON array of objects conforming exactly to this TypeScript schema:
+Return a JSON array of objects conforming exactly to this schema:
 Array<{
   jobId: string;
   matchScore: number;
@@ -136,5 +133,83 @@ Array<{
   } catch (err) {
     console.error("Failed to parse Gemini structured JSON response:", responseText, err);
     throw new Error("Invalid structured output from Gemini model");
+  }
+}
+
+/**
+ * Recruiter Mode: Evaluates retrieved candidate resumes against a Job Description (Recruiter perspective)
+ */
+export async function explainCandidateMatches(
+  jobDescription: string,
+  matchedCandidates: HybridResumeSearchResult[]
+): Promise<Record<string, CandidateMatchExplanation>> {
+  if (matchedCandidates.length === 0) {
+    return {};
+  }
+
+  const genAI = getGenAI();
+  const model = genAI.getGenerativeModel({
+    model: LLM_MODEL,
+    generationConfig: {
+      temperature: 0.0, // Strictly deterministic, zero hallucination
+      responseMimeType: "application/json",
+    },
+  });
+
+  // Provide full resume context (up to 4000 characters) so skills in lower sections are not cut off
+  const candidatesPayload = matchedCandidates.map((c) => ({
+    id: c.id,
+    name: c.candidate_name,
+    skills: c.skills,
+    resumeText: c.raw_text.slice(0, 4000),
+  }));
+
+  const prompt = `
+You are an executive technical recruiter and talent assessment lead for HireMatch.
+Evaluate the candidate resumes strictly against the given Job Description.
+
+Job Description:
+\"\"\"
+${jobDescription.slice(0, 4000)}
+\"\"\"
+
+Candidates to Evaluate:
+${JSON.stringify(candidatesPayload, null, 2)}
+
+STRICT GROUNDING & ANTI-HALLUCINATION RULES (MANDATORY COMPLIANCE):
+1. "criticalMissingSkills" MUST ONLY include tools, technologies, or qualifications that are EXPLICITLY and VERBATIM demanded in the Job Description text above.
+2. DO NOT extrapolate, infer, or invent industry-standard skills. For example, if the Job Description does NOT mention "Docker", "AWS", or "Kubernetes", you are STRICTLY FORBIDDEN from listing them as missing skills.
+3. If the candidate's resume covers all explicitly mentioned requirements in the Job Description, "criticalMissingSkills" MUST be an empty array [].
+4. "matchedQualifications" MUST only include skills explicitly confirmed in BOTH the Job Description AND the candidate's resume.
+5. "matchScore" MUST be a fair 0 to 100 percentage based strictly on the candidate's alignment with the stated requirements.
+6. "hiringVerdict" must be "Strong Interview" (80-100), "Consider" (60-79), or "Reject" (<60).
+7. "interviewQuestions" must contain exactly 2 focused technical questions probing their specific stated experience or real gaps.
+
+Return a JSON array of objects conforming exactly to this schema:
+Array<{
+  candidateId: string;
+  candidateName: string;
+  matchScore: number;
+  hiringVerdict: "Strong Interview" | "Consider" | "Reject";
+  fitSummary: string;
+  matchedQualifications: string[];
+  criticalMissingSkills: string[];
+  interviewQuestions: string[];
+}>
+`;
+
+  const result = await model.generateContent(prompt);
+  const responseText = result.response.text();
+
+  try {
+    const parsed: CandidateMatchExplanation[] = JSON.parse(responseText);
+    const map: Record<string, CandidateMatchExplanation> = {};
+    for (const item of parsed) {
+      map[item.candidateId] = item;
+    }
+    return map;
+  } catch (err) {
+    console.error("Failed to parse Gemini candidate explanations JSON:", responseText, err);
+    throw new Error("Invalid structured output from Gemini model for candidate evaluation");
   }
 }
